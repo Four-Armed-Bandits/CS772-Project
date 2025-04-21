@@ -8,12 +8,26 @@ import os
 import random
 import logging
 import torch
+import pickle
 
 from load_dataset import load_ds
 from models import HuggingfaceModel
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
+
+import re
+
+def clean_context(context):
+    return re.sub(r'\[[A-Z]+\]', '', context).strip()
+
+
+def save(object, file):
+    """Save an object to a file using pickle."""
+    with open(file, 'wb') as f:
+        pickle.dump(object, f)
+    logging.info(f"Saved object to {file}")
+
 
 def split_dataset(dataset):
     """Get indices of answerable and unanswerable questions."""
@@ -33,47 +47,120 @@ def split_dataset(dataset):
 
     return answerable_indices, unanswerable_indices
 
-def generate_answers(model, train_dataset, validation_dataset, num_samples=10):
-    results = {}
-    total = len(dataset)
-    indices = random.sample(range(total), min(num_samples, total))
-    logging.info("Using %d examples out of %d", len(indices), total)
+def get_make_prompt():
+    def make_prompt(context, question, answer, brief, brief_always):
+        prompt = ''
+        if brief_always:
+            prompt += brief
+        if (context is not None):
+            prompt += f"Context: {context}\n"
+        prompt += f"Question: {question}\n"
+        if answer:
+            prompt += f"Answer: {answer}\n\n"
+        else:
+            prompt += 'Answer:'
+        return prompt
+    return make_prompt
 
-        
-    for idx in indices:
-        example = dataset[idx]
-        qid = example["id"]
-        question = example["question"]
+BRIEF_PROMPTS = {
+    'default': "Answer the following question as briefly as possible.\n",
+    'chat': 'Answer the following question in a single brief but complete sentence.\n'}
+
+def get_reference(example):
+    if 'answers' not in example:
+        example = example['reference']
+    answers = example['answers']
+    answer_starts = answers.get('answer_start', [])
+    reference = {'answers': {'answer_start': answer_starts, 'text': answers['text']}, 'id': example['id']}
+    return reference
+
+def construct_fewshot_prompt_from_indices(dataset, example_indices, brief, brief_always, make_prompt):
+    """Given a dataset and indices, construct a fewshot prompt."""
+    if not brief_always:
+        prompt = brief
+    else:
+        prompt = ''
+
+    for example_index in example_indices:
+
+        example = dataset[example_index]
         context = example["context"]
-        prompt = f"Context : {context}\n Question : {question}\nAnswer:"
-        logging.info("Processing example id %s", qid)
-        logging.info("Processing question: %s", question)
+        question = example["question"]
+        answer = example["answers"]["text"][0]
 
-        # Use a low temperature for the most likely answer.
-        predicted_answer, token_log_likelihoods, embedding = model.predict(prompt, temperature=0.1)
-        
-        # Store the results
-        results[qid] = {
-            "question": question,
-            "context": context,
-            "most_likely_answer": {
-                "response": predicted_answer,
-                "token_log_likelihoods": token_log_likelihoods,
-                "embedding": embedding.cpu() if isinstance(embedding, torch.Tensor) else embedding
-            },
-            "reference": example.get("answers", {}).get("text", "")
-        }
-    return results
+        prompt = prompt + make_prompt(context, question, answer, brief, brief_always)
+
+    return prompt
+
+def generate_answers(model, train_dataset, validation_dataset, num_samples=10, num_generations=3, temperature=0.4):
+    answerable_indices, _ = split_dataset(train_dataset)
+
+    prompt_indices = random.sample(answerable_indices, num_samples)
+    make_prompt = get_make_prompt()
+    BRIEF = BRIEF_PROMPTS["default"]
+    prompt = construct_fewshot_prompt_from_indices(train_dataset, prompt_indices, BRIEF, False, make_prompt)
+    
+    for dataset_split in ['train', 'validation']:
+        if dataset_split == 'train':
+            dataset = train_dataset
+            possible_indices = list(set(answerable_indices))
+        else:
+            dataset = validation_dataset
+            possible_indices = range(len(dataset))
+
+        indices = random.sample(possible_indices, min(num_samples, len(dataset)))
+        generations = {}
+
+        for index in indices:
+            example = dataset[index]
+            question, context = example["question"], example["context"]
+            context = clean_context(context)
+            correct_answer = example["answers"]["text"]
+
+            # Create the current input and combine with the few-shot prompt.
+            current_input = make_prompt(context, question, None, BRIEF, True)
+            local_prompt = current_input
+
+            # print(local_prompt)
+
+            full_responses = []
+            num_generations = num_generations + 1  # First generation is low temperature.
+            for i in range(num_generations):
+                temperature = 0.1 if i == 0 else temperature
+                predicted_answer, token_log_likelihoods, embedding = model.predict(local_prompt, temperature)
+                
+                # For the first generation, compute accuracy and store as the main answer.
+                if i == 0:
+                    generations[example["id"]] = {
+                        "question": question,
+                        "context": context,
+                        "most_likely_answer": {
+                            "response": predicted_answer,
+                            "token_log_likelihoods": token_log_likelihoods,
+                            "embedding": embedding,
+                        },
+                        "reference": get_reference(example)
+                    }
+                    print(f"Example ID: {example['id']}")
+                    print(f"Question: {question}")
+                    print(f"Context: {context}")
+                    print(f"Predicted Answer: {predicted_answer}")
+                    print(f"Correct Answer: {correct_answer}")
+                else:
+                    full_responses.append((predicted_answer, token_log_likelihoods, embedding, 0.0))
+            generations[example["id"]]["responses"] = full_responses
+        save(generations, f"{dataset_split}_generations.pkl")
 
 def main():
     # Dataset Name ("svamp", "squad", "trivia_qa", "bioasq", "nq")
-    dataset_name = "svamp"
-    num_samples = 5  
+    random.seed(47)
+    dataset_name = "trivia_qa"
+    num_samples = 100  
 
     train_dataset, validation_dataset = load_ds(dataset_name, add_options=False, seed=42)
    
     if not isinstance(train_dataset, list):
-        logging.error("Dataset format not recognized.")
+        logging.error(f"Dataset format not recognized, got: {type(train_dataset)} ")
         return
 
 
@@ -82,17 +169,7 @@ def main():
     model = HuggingfaceModel(model_name, stop_sequences="default", max_new_tokens=max_new_tokens)
 
     # Generate answers.
-    generations = generate_answers(model, train_dataset, num_samples=num_samples)
-    
-    # # For demonstration, print the results.
-    # for qid, data in generations.items():
-    #     print("="*40)
-    #     print(f"ID: {qid}")
-    #     print("Question:", data["question"])
-    #     print("Context:", data["context"])
-    #     print("Answer:", data["most_likely_answer"]["response"])
-    #     print("Log Likelihoods:", data["most_likely_answer"]["token_log_likelihoods"])
-    #     print()
+    generate_answers(model, train_dataset, validation_dataset, num_samples=num_samples)
 
 if __name__ == "__main__":
     main()

@@ -40,7 +40,7 @@ class StoppingCriteriaSub(StoppingCriteria):
         self.tokenizer = tokenizer
         self.match_on = match_on
         if self.match_on == 'tokens':
-            self.stops = [torch.tensor(self.tokenizer.encode(i)).to('cuda') for i in self.stops]
+            self.stops = [torch.tensor(self.tokenizer.encode(i)).to('mps') for i in self.stops]
             print(self.stops)
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor):
@@ -212,7 +212,7 @@ class HuggingfaceModel(BaseModel):
     def predict(self, input_data, temperature, return_full=False):
 
         # Implement prediction.
-        inputs = self.tokenizer(input_data, return_tensors="pt").to("cuda")
+        inputs = self.tokenizer(input_data, return_tensors="pt").to("mps")
 
         if 'llama' in self.model_name.lower() or 'falcon' in self.model_name or 'mistral' in self.model_name.lower():
             if 'token_type_ids' in inputs:  # Some HF models have changed.
@@ -259,10 +259,12 @@ class HuggingfaceModel(BaseModel):
             input_data_offset = len(input_data)
         else:
             #raise ValueError('Have not tested this in a while.')
-            logging.error(f"Full answer should start from input_data. Setting input_data offset to 0")
-            logging.error(f"Full answer is {full_answer}")
-            logging.error(f"Input data is {input_data}")
+            # logging.error(f"Full answer should start from input_data. Setting input_data offset to 0")
+            # logging.error(f"Full answer is {full_answer}")
+            # logging.error(f"Input data is {input_data}")
             input_data_offset = 0
+
+        input_data_offset = len(input_data)
 
         # Remove input from answer.
         answer = full_answer[input_data_offset:]
@@ -377,7 +379,7 @@ class HuggingfaceModel(BaseModel):
         """Get the probability of the model anwering A (True) for the given input."""
 
         input_data += ' A'
-        tokenized_prompt_true = self.tokenizer(input_data, return_tensors='pt').to('cuda')['input_ids']
+        tokenized_prompt_true = self.tokenizer(input_data, return_tensors='pt').to('mps')['input_ids']
         # The computation of the negative log likelihoods follows:
         # https://huggingface.co/docs/transformers/perplexity.
 
