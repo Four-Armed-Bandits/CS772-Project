@@ -1,0 +1,1 @@
+{"_timestamp":1.7459425916401093e+09,"validation_accuracy":0.3,"len_p_true":19,"n_iter":14,"_runtime":280.303417614,"acc_p_ik_train_train":1,"model":"Llama-3.2-1B","_wandb":{"runtime":280},"auroc_p_ik_train_test":0,"auroc_p_ik_eval":0.5,"acc_p_ik_eval":0.75,"converged":true,"_step":5,"train_accuracy":0.3,"dataset":"trivia_qa","auroc_p_ik_train_train":1,"acc_p_ik_train_test":0.25}
