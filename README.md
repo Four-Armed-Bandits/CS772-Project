@@ -10,7 +10,3 @@ This repository consists of the codebase for CS772 : Probablistic ML Project, co
 | Arush Upadhyaya | 220213 |
 | Kushagra Srivastava | 220573 |
 | Zehaan Naik | 221238 |
-
-## Contents
-
-## Instructions
